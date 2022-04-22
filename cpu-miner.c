@@ -110,6 +110,8 @@ static const char *algo_names[] = {
 	[ALGO_SHA256D]		= "sha256d",
 };
 
+const bool use_gbt_txid = true;
+
 bool opt_debug = false;
 bool opt_protocol = false;
 static bool opt_benchmark = false;
@@ -352,6 +354,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	int cbtx_size;
 	unsigned char *cbtx = NULL;
 	unsigned char *tx = NULL;
+
 	int tx_count, tx_size;
 	unsigned char txc_vi[9];
 	unsigned char (*merkle_tree)[32] = NULL;
@@ -580,25 +583,52 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	bin2hex(work->txs, txc_vi, n);
 	bin2hex(work->txs + 2*n, cbtx, cbtx_size);
 	char *txs_end = work->txs + strlen(work->txs);
+	applog(LOG_INFO, " cbtx->hex: %s ", (work->txs + 2*n)  );
+ 
 
 	/* generate merkle root */
 	merkle_tree = malloc(32 * ((1 + tx_count + 1) & ~1));
 	size_t tx_buf_size = 32 * 1024;
 	tx = malloc(tx_buf_size);
 	sha256d(merkle_tree[0], cbtx, cbtx_size);
+	//
+	//applog(LOG_INFO, " cbtx->merkle_tree[0]: %s ", merkle_tree[0] );
+	char merkle_tree_hex[32];
+	bin2hex( merkle_tree_hex, (unsigned char *)merkle_tree[0], 32);
+	applog(LOG_INFO, " tx(coinbase) -> txid_inverted: %s", merkle_tree_hex );
+	//
 	for (i = 0; i < tx_count; i++) {
 		tmp = json_array_get(txa, i);
 		const char *tx_hex = json_string_value(json_object_get(tmp, "data"));
 		const size_t tx_hex_len = tx_hex ? strlen(tx_hex) : 0;
 		const int tx_size = tx_hex_len / 2;
-		if (segwit) {
-			const char *txid = json_string_value(json_object_get(tmp, "txid"));
+		const char *txid = json_string_value(json_object_get(tmp, "txid"));
+		if (use_gbt_txid) {
+
+			// applog(LOG_INFO, " normal txi%d: txid(size:%d) in gbt: %s ", i, strlen(txid), txid );
+			unsigned char txid_inverted[] = "74ede84980e3c09c7af2034fe7f9f50138ea6a2deb66a4db1ee4f98f8d4eb569";
+			// applog(LOG_INFO, " normal txi%d: txid_inverted(size:%d) in gbt: %s ", i,  strlen(txid_inverted),  txid_inverted );
+			for ( int ichar = 0; ichar < 32; ichar++){
+			 	// applog(LOG_INFO, " ichar:%d, ichar*2+1:%d, txid:%c, %c", ichar*2, ichar*2+1, txid[62-ichar*2], txid[62-ichar*2+1] );
+				txid_inverted[ichar*2]   = txid[62-ichar*2];
+				txid_inverted[ichar*2+1] = txid[62-ichar*2+1] ;
+			}
+			// applog(LOG_INFO, " normal txi%d: txid_inverted in gbt: %s ", i,  txid_inverted );
+			
+			if (!txid || !hex2bin(merkle_tree[1 + i], txid_inverted, 32)) {
+				applog(LOG_ERR, "JSON invalid transaction txid");
+				goto out;
+			}
+
+		} 
+		else if (segwit) {
 			if (!txid || !hex2bin(merkle_tree[1 + i], txid, 32)) {
 				applog(LOG_ERR, "JSON invalid transaction txid");
 				goto out;
 			}
 			memrev(merkle_tree[1 + i], 32);
-		} else {
+		}
+		else {
 			if (tx_size > tx_buf_size) {
 				free(tx);
 				tx_buf_size = tx_size * 2;
@@ -610,22 +640,41 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 			}
 			sha256d(merkle_tree[1 + i], tx, tx_size);
 		}
+		//applog(LOG_INFO, "tx_hex: %s ", tx_hex );
+		bin2hex( merkle_tree_hex, (unsigned char *)merkle_tree[1 + i], 32);
+		applog(LOG_INFO, " tx(normal%d)  -> txid_inverted: %s", i, merkle_tree_hex );
+		//be32dec((uint32_t *)merkle_tree[0]
+
 		if (!submit_coinbase) {
 			strcpy(txs_end, tx_hex);
 			txs_end += tx_hex_len;
 		}
 	}
+
+	// applog(LOG_INFO, " ------------------------------------------------------------------------------------ tx_count:%d ", tx_count ); 
+	// applog(LOG_INFO, " Calc. merkle root:" ); 
+	// char merkle_tree_hex64[64];
 	free(tx); tx = NULL;
 	n = 1 + tx_count;
 	while (n > 1) {
 		if (n % 2) {
+			// applog(LOG_INFO, " memcpy merkle_tree[n-1:%2d]  to  merkle_tree[n:%2d] \n", n-1, n ); 
 			memcpy(merkle_tree[n], merkle_tree[n-1], 32);
 			++n;
 		}
 		n /= 2;
-		for (i = 0; i < n; i++)
+		for (i = 0; i < n; i++){
+			// applog(LOG_INFO, " hash: i = %2d", i );
+			// bin2hex( merkle_tree_hex64, (unsigned char *)&(merkle_tree[2*i]), 64 );
+			// applog(LOG_INFO, " data: i = %2d,  size = %3d,  merkle_tree[2*i]_hex = %s ", i, sizeof(merkle_tree[2*i]), merkle_tree_hex64 );
+
 			sha256d(merkle_tree[i], merkle_tree[2*i], 64);
+
+			// bin2hex( merkle_tree_hex, (unsigned char *)&(merkle_tree[i]), 32);
+			// applog(LOG_INFO, " hash: i = %2d,  size =  32,  merkle_tree[i]_hex   = %s ", i, merkle_tree_hex );
+		}
 	}
+	// applog(LOG_INFO, " ------------------------------------------------------------------------------------\n" ); 
 
 	/* assemble block header */
 	work->data[0] = swab32(version);
@@ -633,6 +682,12 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 		work->data[8 - i] = le32dec(prevhash + i);
 	for (i = 0; i < 8; i++)
 		work->data[9 + i] = be32dec((uint32_t *)merkle_tree[0] + i);
+	bin2hex( merkle_tree_hex, (unsigned char *)&(merkle_tree[0]), 32);
+	applog(LOG_INFO, " merkle_tree_root: %s \n", merkle_tree_hex );
+	//char work_data[32];
+	//bin2hex( work_data, (unsigned char *) &(work->data[9]), 32);
+	//applog(LOG_INFO, " work->data[9]: %s \n", work_data );
+
 	work->data[17] = swab32(curtime);
 	work->data[18] = le32dec(&bits);
 	memset(work->data + 19, 0x00, 52);
